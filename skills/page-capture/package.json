@@ -1,0 +1,9 @@
+{
+  "name": "page-capture-skill",
+  "version": "1.0.0",
+  "description": "Playwright page capture skill for Claude Code",
+  "private": true,
+  "dependencies": {
+    "playwright": "^1.40.0"
+  }
+}

@@ -1,0 +1,17 @@
+# Ignore everything by default
+*
+
+# Track configuration
+!.gitignore
+!settings.json
+
+# Track agents and skills (but not node_modules)
+!agents/
+!agents/**
+!skills/
+!skills/**
+skills/**/node_modules/
+
+# Track plugin config (not marketplace cache)
+!plugins/config.json
+!plugins/installed_plugins.json
