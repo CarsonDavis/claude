@@ -20,6 +20,8 @@ Research follows four phases:
 
 Each topic gets its own folder. The separation of raw research (background.md) from clean output (report.md) allows you to gather tons of information and log it carefully so it can be referenced later, while still providing a clean report.
 
+**Critical workflow rule:** `background.md` must be created before any searching begins, and it must be updated after every single search — never batch writes or defer logging. The research log should grow incrementally throughout the process.
+
 ## Structure
 
 ```
@@ -61,11 +63,10 @@ Before any research, create the folder and files.
 ### Checklist
 
 1. Create a folder for the topic (lowercase with hyphens, e.g., `message-queue-comparison`)
-2. Create `background.md` with:
-   - Header with research topic and date
-   - Empty `## Sources` section
-   - Empty `## Key Findings` section
+2. **Create `background.md` IMMEDIATELY, before performing any searches.** Copy the template from `~/.claude/agents/background-template.md`, then fill in the `{TOPIC}`, `{DATE}`, and `{DESCRIPTION}` placeholders. Delete the example search entries — they're there to show the format, not to be kept. Leave the `## Sources` and `## Research Log` headers and the HTML comment.
 3. If requirements were gathered, ensure `requirements.md` captures user constraints
+
+**Do not perform a single search until `background.md` exists on disk.**
 
 ## Phase 2: Research
 
@@ -88,16 +89,45 @@ Plan 5-10 initial searches across these categories:
   - Stable domains (history, established science) → older authoritative sources still valuable
   - Mixed topics → recent for current state, older for foundational context
 
-### After Each Search
+### After Each Search — WRITE BEFORE SEARCHING AGAIN
 
-After each search that yields useful results:
+**This is the most important rule in the entire workflow: after every single search, you MUST append your findings to `background.md` before performing the next search.** Do not batch searches. Do not "gather everything and write later." The cycle is always:
 
-1. Append findings to `background.md` immediately—don't wait
-2. Log the search query used
-3. Record key information with source attribution
-4. Note any follow-up questions or related topics discovered
+1. **Search** → 2. **Write to `background.md`** → 3. **Next search**
 
-If a search yields nothing useful, note this briefly and move on.
+Each search gets its own clearly separated entry in `background.md`. Append a block like this after every search:
+
+```
+---
+
+### Search: "your exact search query here"
+
+- **Finding one** with inline citation ([Source Name][1])
+- **Finding two** from a different source ([Other Source][2])
+- A third detail, citing the same or new source ([Source Name][1])
+
+> Direct quotes go in blockquotes when the exact wording matters ([Source][3])
+
+**Follow-up questions:** Any new threads to pull on for later searches.
+```
+
+Key rules for each entry:
+- **Every factual claim must have an inline citation** linking to a numbered source in the `## Sources` section. No orphan facts.
+- Use markdown reference-style links: `([Display Name][1])` with the link definition in `## Sources`.
+- Add new sources to the `## Sources` list as you encounter them. Number them sequentially.
+- Keep each search entry self-contained — a reader should be able to see exactly what you learned from each search and where it came from.
+
+If a search yields nothing useful, still log it:
+
+```
+---
+
+### Search: "query that didn't pan out"
+
+No useful results. Moving on.
+```
+
+**Never perform two consecutive searches without a write to `background.md` in between.** This is non-negotiable — it prevents information loss and ensures the research log is always up to date.
 
 ### Targeted Searches
 
@@ -105,14 +135,25 @@ After initial searches, you'll discover topics needing deeper exploration. Creat
 
 ### Background File Format
 
-- Organize by topic with `## Section` headers
+The background file is a **chronological research log** — each search is its own `### Search:` entry, separated by `---` dividers, in the order they were performed. Do NOT reorganize findings by topic. The log should read as a timeline of your research process.
+
+**Citation rules:**
+- Every factual claim gets an inline citation: `([Source Name][N])`
+- The `## Sources` section at the top is a numbered reference list, updated incrementally as new sources are found
+- Use reference-style links so the source list acts as a single lookup table
+- When multiple sources confirm the same fact, cite all of them: `([Source A][1], [Source B][4])`
+
+**Formatting rules:**
 - Bold key findings for scannability
-- Use markdown reference-style links at end of each section
-- Include publication/source in link text: `([Source: Title][1])`
 - Include dates for time-sensitive information (pricing, versions, market data)
 - Preserve nuance—don't flatten "debated" into "confirmed"
-- Cross-reference important claims across multiple sources
 - Be explicit about gaps—note when information is unavailable or uncertain
+- Use blockquotes for direct quotes worth preserving verbatim
+
+**Anti-patterns to avoid:**
+- Dumping all findings into topic-based sections with no search attribution (this hides where info came from)
+- Listing sources at the top but never referencing them inline (useless bibliography)
+- Batching multiple searches into a single write (breaks the incremental log)
 
 ## Phase 3: Synthesis
 
