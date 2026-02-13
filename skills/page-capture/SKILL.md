@@ -1,6 +1,6 @@
 ---
 name: page-capture
-description: Captures screenshots and rendered HTML from any web page using Playwright. Use when the user wants to screenshot, capture, see, or view any URL (localhost or external sites like google.com).
+description: Captures visual screenshots from web pages using Playwright. ONLY use when the user explicitly needs to SEE what a page looks like visually (e.g., "screenshot", "what does it look like", "show me the page"). Do NOT use for checking status codes, fetching HTML content, or non-visual tasks — use curl or WebFetch for those instead.
 allowed-tools: Read, Bash
 ---
 
@@ -18,11 +18,16 @@ cd ~/~/.claude/skills/page-capture && npm install
 
 ## When to Use
 
-- User asks to "screenshot", "capture", "see", or "view" any web page
-- User wants to debug visual/styling issues on localhost
-- User needs to see what an external website looks like
-- User needs DOM inspection of rendered content
-- Any time you need to verify how a page actually renders
+- User explicitly asks to "screenshot" or "capture" a web page
+- User wants to debug **visual/styling** issues (layout, colors, rendering)
+- User asks "what does the page look like" or "show me the page"
+
+## When NOT to Use
+
+- Checking if a page is up or getting status codes — use `curl -I` instead
+- Fetching HTML content or inspecting markup — use `curl` or `WebFetch` instead
+- Checking API responses — use `curl` instead
+- Any non-visual task where you don't need to see the rendered page
 
 ## How to Capture
 
