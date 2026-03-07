@@ -55,7 +55,7 @@ Report to the user: duration, resolution, codec, bitrate, and file size.
 **IMPORTANT: Always use CRF 18 unless the user explicitly asks for a different quality level or smaller file size.** CRF 18 is visually lossless — the compressed video will look identical to the original to the human eye. Do NOT use a higher CRF value by default; only deviate if the user specifically requests it.
 
 ```bash
-ffmpeg -i "$FILE" -c:v libx264 -preset slow -crf 18 -c:a copy "/path/to/output.mp4"
+ffmpeg -i "$FILE" -c:v libx264 -preset medium -crf 18 -c:a copy "/path/to/output.mp4"
 ```
 
 **Flags:**
@@ -63,7 +63,7 @@ ffmpeg -i "$FILE" -c:v libx264 -preset slow -crf 18 -c:a copy "/path/to/output.m
 | Flag | Purpose |
 |------|---------|
 | `-c:v libx264` | Re-encode video with H.264 |
-| `-preset slow` | Better compression ratio (trades encode speed for smaller file) |
+| `-preset medium` | Good balance of compression ratio and encode speed |
 | `-crf 18` | **DEFAULT. Visually lossless. Always use this unless told otherwise.** |
 | `-c:a copy` | Copy audio as-is, no re-encoding |
 
@@ -97,6 +97,6 @@ Lower CRF = better quality, bigger file. Adjust if the user asks for "smaller" (
 ## Tips
 
 - Screen recordings compress extremely well (80-95% reduction) because most pixels stay static between frames
-- The `slow` preset takes longer but produces noticeably smaller files than `medium` — worth it for large recordings
+- The `medium` preset is the default — good balance of speed and compression
 - Always use `-c:a copy` to avoid re-encoding audio unnecessarily
-- For very long recordings (10+ minutes), consider using `-preset medium` to avoid long encode times
+- For cases where the user wants maximum compression and doesn't mind waiting, use `-preset slow`
