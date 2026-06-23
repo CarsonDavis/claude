@@ -1,6 +1,6 @@
 ---
 name: get-page
-description: Use when fetching a web page fails or returns unusable content — WebFetch/curl/requests gives a 403/401 block, 429 rate-limit, an empty or JS-rendered page (SPA shell, missing body text), a Cloudflare/anti-bot challenge, or garbled/binary output. Escalates through HTTP → TLS-impersonation → headless browser to get the real content and extract it as clean markdown or structured data.
+description: Use when fetching a web page fails or returns unusable content — WebFetch/curl/requests gives a 403/401 block, 429 rate-limit, an empty or JS-rendered page (SPA shell, missing body text), a Cloudflare/anti-bot challenge, garbled/binary output, or a PDF you need as text. Escalates through HTTP → TLS-impersonation → headless browser to get the real content and extract it as clean markdown or structured data.
 ---
 
 # get-page
@@ -33,6 +33,13 @@ It escalates only as far as needed and prints a provenance trail, e.g.
 Formats: `--format md` (default) · `json` (markdown + jsonld + metadata) · `raw`.
 Cap at HTTP-only (skip the browser) with `--no-browser`.
 
+**Trust the verdict.** If the ladder never reaches usable content, `auto`
+prints a `⚠` banner and exits non-zero — the body is likely a block/challenge
+page, not the real content. Don't treat a warned result as the answer.
+
+**PDFs** are handled automatically: `auto`/`readable` on a PDF URL detect it and
+return extracted text instead of choking on binary.
+
 ## The ladder
 
 | Rung | What it does | Beats |
@@ -40,7 +47,7 @@ Cap at HTTP-only (skip the browser) with `--no-browser`.
 | smart | httpx + real browser headers | default-UA blocks (most common) |
 | diagnose | classifies the failure, picks next rung | routing |
 | impersonate | curl_cffi TLS-fingerprint spoof | anti-bot 403s, no browser |
-| browser | Playwright + stealth, scroll-to-load | true JS-rendered pages |
+| browser | crawl4ai (stealth headless render) | JS-rendered pages, some anti-bot |
 
 `auto` runs these for you. Use individual subcommands to compose your own flow.
 
@@ -69,16 +76,19 @@ Run `get-page <command> --help` for flags.
 
 - **Zero setup.** `uv` reads the inline dependency header and manages an
   isolated environment automatically on first run. Nothing to `pip install`.
-- **Browser rung is lazy.** Playwright is pulled in only when the browser rung
-  is actually reached. The Chromium binary is a one-time download — if missing,
-  the tool prints the exact command:
+- **Browser rung is lazy.** crawl4ai (~90 packages, stealth headless) is pulled
+  in only when the browser rung is actually reached, then cached. It also fires
+  as a "second opinion" when an HTTP result looks usable but is suspiciously
+  thin with `<script>` markers (client-rendered listing grids). The Chromium
+  binary is a one-time download — if missing, the tool prints:
   `uv tool run --with playwright playwright install chromium`.
 - **Single page only.** No crawling/pagination by design — fetch one URL, get
   clean content. For authenticated pages, the browser rung can be extended with
   a persistent profile (not built in).
 - **Built-in politeness.** `auto` honors `429` `Retry-After` with backoff.
 
-## Design
+## For maintainers
 
-See `docs/2026-06-21-get-page-design.md` for the full rationale, the failure
-taxonomy, and the patterns distilled from prior scraping projects.
+Benchmark, rationale, and the OSS-approach comparison that shaped the ladder live
+in `tests/` (`FINDINGS.md`, `README.md`) — not loaded here. Re-run the bed and
+keep CORE at 9/9 before changing the fetch/extract path.

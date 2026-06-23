@@ -9,6 +9,7 @@
 #     "lxml",
 #     "readability-lxml",
 #     "markdownify",
+#     "pypdf",
 # ]
 # ///
 """get-page — tiered escalation toolkit for fetching stubborn web pages.
@@ -63,6 +64,11 @@ BROWSER_HEADERS = {
 
 DEFAULT_TIMEOUT = 30.0
 
+# An HTTP result that parses as "usable" but yields less visible text than this,
+# while carrying <script> markers, is treated as a likely client-rendered shell
+# and gets a browser second opinion. Real articles clear this easily.
+THIN_USABLE_CHARS = 700
+
 
 @dataclass
 class Result:
@@ -73,9 +79,18 @@ class Result:
     final_url: str = ""
     status: int | None = None
     html: str = ""
+    content: bytes = b""
+    content_type: str = ""
     ok: bool = False
     error: str = ""
     notes: list[str] = field(default_factory=list)
+
+
+def is_pdf(r: Result) -> bool:
+    """True if a fetch result is a PDF (by content-type or %PDF magic bytes)."""
+    if "application/pdf" in (r.content_type or "").lower():
+        return True
+    return r.content[:5] == b"%PDF-"
 
 
 # ----------------------------------------------------------------------------
@@ -100,7 +115,12 @@ def fetch_smart(url: str, timeout: float = DEFAULT_TIMEOUT) -> Result:
             resp = client.get(url)
         r.status = resp.status_code
         r.final_url = str(resp.url)
-        r.html = resp.text
+        r.content = resp.content
+        r.content_type = resp.headers.get("content-type", "")
+        # Only decode to text for non-binary bodies; PDFs etc. stay as bytes so
+        # we never feed NULL-byte binary into the HTML parsers.
+        if not is_pdf(r):
+            r.html = resp.text
         r.ok = resp.status_code < 400
     except Exception as exc:  # noqa: BLE001 — report, don't crash the ladder
         r.error = f"{type(exc).__name__}: {exc}"
@@ -132,7 +152,10 @@ def fetch_impersonate(
         )
         r.status = resp.status_code
         r.final_url = resp.url
-        r.html = resp.text
+        r.content = resp.content
+        r.content_type = resp.headers.get("content-type", "")
+        if not is_pdf(r):
+            r.html = resp.text
         r.ok = resp.status_code < 400
     except Exception as exc:  # noqa: BLE001
         r.error = f"{type(exc).__name__}: {exc}"
@@ -140,75 +163,59 @@ def fetch_impersonate(
 
 
 # ----------------------------------------------------------------------------
-# Rung 3 — headless browser (Playwright), lazy + break-glass
+# Rung 3 — headless browser (crawl4ai), lazy + break-glass
 # ----------------------------------------------------------------------------
 
 def fetch_browser(
     url: str, timeout: float = DEFAULT_TIMEOUT, scroll: bool = True
 ) -> Result:
-    """Render the page in headless Chromium for genuinely JS-rendered content.
+    """Render the page in a stealth headless browser via crawl4ai.
 
-    Playwright is NOT a core dependency. If it is missing we re-exec ourselves
-    through `uv run --with playwright ...` so the heavy dep is only ever pulled
-    in when actually needed.
+    crawl4ai (patchright-based, undetected) handles JS rendering and evades a
+    broader set of anti-bot defenses than bare Playwright — in benchmarking it
+    was the only rung that recovered client-rendered listing grids and survived
+    hosts that crash plain Chromium with ERR_HTTP2_PROTOCOL_ERROR.
+
+    It is NOT a core dependency (it pulls ~90 packages). If missing we re-exec
+    once through `uv run --with crawl4ai ...` so it is only ever installed when
+    the browser rung is actually reached.
+
+    We keep the rendered *HTML* (not crawl4ai's markdown) so get-page's own
+    diagnose/extraction layer still runs on top — that layer is what flags a
+    rendered block/challenge page that crawl4ai alone would call "usable".
     """
     r = Result(url=url, rung="browser")
 
     try:
-        from playwright.sync_api import sync_playwright
+        import crawl4ai  # noqa: F401
     except ImportError:
-        # Re-exec once with playwright added to the ephemeral uv environment.
         if os.environ.get("GET_PAGE_BROWSER_REEXEC") != "1":
             env = dict(os.environ, GET_PAGE_BROWSER_REEXEC="1")
             os.execvpe(
                 "uv",
-                [
-                    "uv", "run",
-                    "--with", "playwright",
-                    "--with", "playwright-stealth",
-                    "--script", os.path.abspath(__file__),
-                    *sys.argv[1:],
-                ],
+                ["uv", "run", "--with", "crawl4ai",
+                 "--script", os.path.abspath(__file__), *sys.argv[1:]],
                 env,
             )
         r.error = (
-            "Playwright not available. Install once with:\n"
-            "  uv tool run --with playwright playwright install chromium\n"
-            "or run this script via `uv run --with playwright ...`."
+            "crawl4ai not available. Install once with:\n"
+            "  uv run --with crawl4ai --script <this script> ..."
         )
         return r
 
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-            ctx = browser.new_context(
-                user_agent=BROWSER_HEADERS["User-Agent"],
-                locale="en-US",
-            )
-            try:
-                from playwright_stealth import stealth_sync  # type: ignore
-
-                page = ctx.new_page()
-                stealth_sync(page)
-            except Exception:  # noqa: BLE001 — stealth is best-effort
-                page = ctx.new_page()
-
-            page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
-            if scroll:
-                _scroll_to_load(page)
-            r.html = page.content()
-            r.final_url = page.url
-            r.status = 200
-            r.ok = True
-            browser.close()
+        html, final_url, status = _crawl4ai_render(url, timeout, scroll)
+        r.html = html or ""
+        r.final_url = final_url or url
+        r.status = status or (200 if html else None)
+        r.ok = bool(html)
+        if not html:
+            r.error = "browser returned no content"
     except Exception as exc:  # noqa: BLE001
         msg = str(exc)
-        if "Executable doesn't exist" in msg or "playwright install" in msg:
+        if any(k in msg.lower() for k in ("executable", "browser", "playwright", "chromium")):
             r.error = (
-                "Chromium browser binary not installed (one-time setup). Run:\n"
+                "Browser binary missing (one-time setup). Run:\n"
                 "  uv tool run --with playwright playwright install chromium"
             )
         else:
@@ -216,16 +223,28 @@ def fetch_browser(
     return r
 
 
-def _scroll_to_load(page, rounds: int = 10, pause: float = 0.4) -> None:
-    """Scroll to the bottom repeatedly to trigger lazy-loaded content."""
-    last_height = 0
-    for _ in range(rounds):
-        height = page.evaluate("document.body.scrollHeight")
-        if height == last_height:
-            break
-        last_height = height
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(int(pause * 1000))
+def _crawl4ai_render(url: str, timeout: float, scroll: bool):
+    """Render via crawl4ai; return (rendered_html, final_url, status_code)."""
+    import asyncio
+
+    from crawl4ai import AsyncWebCrawler
+
+    async def run():
+        async with AsyncWebCrawler() as crawler:
+            try:
+                result = await crawler.arun(
+                    url=url, page_timeout=int(timeout * 1000), scan_full_page=scroll
+                )
+            except TypeError:
+                # Older/newer signatures may not accept those kwargs.
+                result = await crawler.arun(url=url)
+            return result
+
+    result = asyncio.run(asyncio.wait_for(run(), timeout=timeout + 30))
+    html = getattr(result, "html", "") or getattr(result, "cleaned_html", "") or ""
+    final_url = getattr(result, "url", url) or url
+    status = getattr(result, "status_code", None)
+    return html, final_url, status
 
 
 # ----------------------------------------------------------------------------
@@ -245,6 +264,12 @@ _ANTIBOT_SIGNATURES = (
     "perimeterx",
     "/_incapsula_",
     "are you a human",
+    # PerimeterX / HUMAN "Access Denied" template (e.g. Mouser, Newark).
+    "access to this page has been denied",
+    "you are using automation tools",
+    "access denied",
+    "pardon our interruption",  # Distil/Imperva
+    "request unsuccessful. incapsula",
 )
 
 # Containers that signal a client-rendered SPA shell with no server HTML.
@@ -350,29 +375,95 @@ def diagnose(result: Result) -> dict:
 # Extractors — operate on raw HTML from any rung
 # ----------------------------------------------------------------------------
 
-def extract_readable(html: str, url: str = "") -> str:
-    """Main-article HTML → clean Markdown (readability + markdownify)."""
-    from readability import Document
-    from markdownify import markdownify as md
-
-    doc = Document(html)
-    title = doc.short_title()
-    summary_html = doc.summary(html_partial=True)
-    body = md(summary_html, heading_style="ATX", strip=["a"] if False else None)
-    body = "\n".join(line.rstrip() for line in body.splitlines())
-    # Collapse runs of blank lines.
+def _collapse_blanks(text: str) -> str:
+    """Trim trailing whitespace and collapse runs of blank lines to one."""
     out, blanks = [], 0
-    for line in body.splitlines():
-        if line.strip():
+    for line in text.splitlines():
+        line = line.rstrip()
+        if line:
             blanks = 0
             out.append(line)
         else:
             blanks += 1
             if blanks <= 1:
                 out.append(line)
-    md_body = "\n".join(out).strip()
+    return "\n".join(out).strip()
+
+
+def _fallback_body_md(html: str) -> str:
+    """Markdownify the whole body with chrome stripped, preserving links.
+
+    readability is tuned for articles and discards link lists, which collapses
+    search-result and listing pages to title-only. This denser conversion keeps
+    the result anchors at the cost of some navigation noise.
+    """
+    from bs4 import BeautifulSoup
+    from markdownify import markdownify as md
+
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup(["script", "style", "noscript", "template", "svg", "form"]):
+        tag.decompose()
+    target = soup.body or soup
+    return _collapse_blanks(md(str(target), heading_style="ATX"))
+
+
+def _link_count(md_text: str) -> int:
+    return md_text.count("](")
+
+
+def extract_readable(html: str, url: str = "") -> str:
+    """Main-content HTML → clean Markdown.
+
+    Uses readability for articles; falls back to a link-preserving full-body
+    conversion when readability collapses the page to almost nothing (SERPs,
+    JS listing grids), so result links aren't silently dropped.
+    """
+    from readability import Document
+
+    from markdownify import markdownify as md
+
+    doc = Document(html)
+    title = doc.short_title()
+    md_body = _collapse_blanks(md(doc.summary(html_partial=True), heading_style="ATX"))
+
+    # Detect a collapsed extraction: little body text or no links retained, while
+    # the raw page clearly has many anchors. Then prefer the denser fallback.
+    raw_links = html.count("href=")
+    if (len(md_body) < 200 or _link_count(md_body) == 0) and raw_links > 5:
+        fb = _fallback_body_md(html)
+        if _link_count(fb) > _link_count(md_body) or len(fb) > len(md_body):
+            md_body = fb
+
     header = f"# {title}\n\n" if title else ""
     return f"{header}{md_body}\n"
+
+
+def _main_content_len(html: str) -> int:
+    """Visible-text length of the readability *main content* only (excludes nav/
+    chrome). Small here despite a large raw page == likely a client-rendered
+    shell whose real data isn't in the HTML."""
+    try:
+        from readability import Document
+        return _visible_text_len(Document(html).summary(html_partial=True))
+    except Exception:  # noqa: BLE001
+        return _visible_text_len(html)
+
+
+def extract_pdf(data: bytes) -> str:
+    """Extract text from a PDF byte stream as Markdown-ish plain text."""
+    import io
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(data))
+    parts = []
+    for i, page in enumerate(reader.pages, 1):
+        text = (page.extract_text() or "").strip()
+        if text:
+            parts.append(f"<!-- page {i} -->\n{text}")
+    if not parts:
+        return "(PDF contained no extractable text — likely scanned/image-only.)\n"
+    return "\n\n".join(parts) + "\n"
 
 
 def extract_jsonld(html: str) -> list:
@@ -458,6 +549,29 @@ def _retry_smart(url: str, attempts: int = 3) -> Result:
     return r
 
 
+def _pdf_output(r: Result, fmt: str, trail: str) -> str:
+    """Render a PDF fetch result in the requested output format."""
+    text = extract_pdf(r.content)
+    if fmt == "json":
+        return json.dumps(
+            {
+                "url": r.url,
+                "final_url": r.final_url,
+                "status": r.status,
+                "rung": r.rung,
+                "trail": trail,
+                "verdict": "pdf",
+                "content_type": "application/pdf",
+                "text": text,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    if fmt == "raw":
+        return text
+    return f"<!-- get-page: {r.final_url or r.url} | {trail} -->\n\n{text}"
+
+
 def auto(url: str, fmt: str = "md", allow_browser: bool = True) -> tuple[str, Result, dict]:
     """Walk the escalation ladder until usable content, then extract.
 
@@ -467,24 +581,50 @@ def auto(url: str, fmt: str = "md", allow_browser: bool = True) -> tuple[str, Re
 
     # Rung 0
     r = _retry_smart(url)
+    if is_pdf(r):
+        trail.append("smart → pdf")
+        return _pdf_output(r, fmt, " | ".join(trail)), r, {"verdict": "pdf", "trail": " | ".join(trail)}
     d = diagnose(r)
     trail.append(f"smart → {d['verdict']}")
 
     # Rung 2 — for blocks / fingerprint / anti-bot / transport errors
     if d["verdict"] in ("blocked", "antibot", "error"):
         r2 = fetch_impersonate(url)
+        if is_pdf(r2):
+            trail.append("impersonate → pdf")
+            return _pdf_output(r2, fmt, " | ".join(trail)), r2, {"verdict": "pdf", "trail": " | ".join(trail)}
         d2 = diagnose(r2)
         trail.append(f"impersonate → {d2['verdict']}")
         if d2["verdict"] == "usable" or (not r.ok and r2.ok):
             r, d = r2, d2
 
-    # Rung 3 — for client-rendered / still-challenged pages
-    if allow_browser and d["verdict"] in ("js_shell", "empty", "antibot", "blocked"):
+    # Rung 3 — render in a real browser for client-rendered / still-challenged
+    # pages. Also take a browser "second opinion" when the HTTP result parsed as
+    # usable but is suspiciously thin with script markers (false-usable JS grids
+    # like octopart/findchips that serve a shell over plain HTTP).
+    cur_text = _visible_text_len(r.html) if r.html else 0
+    # Measure *main content* (chrome excluded): a page full of nav boilerplate
+    # but with little real content, plus scripts, is a likely client-rendered
+    # shell whose data needs a browser even though it parsed as "usable".
+    cur_main = _main_content_len(r.html) if r.html else 0
+    thin_usable = (
+        d["verdict"] == "usable"
+        and cur_main < THIN_USABLE_CHARS
+        and "<script" in (r.html or "").lower()
+    )
+    if allow_browser and (
+        d["verdict"] in ("js_shell", "empty", "antibot", "blocked") or thin_usable
+    ):
         r3 = fetch_browser(url)
         if r3.ok and r3.html:
             d3 = diagnose(r3)
-            trail.append(f"browser → {d3['verdict']}")
-            r, d = r3, d3
+            new_text = _visible_text_len(r3.html)
+            # Adopt the render unless we already had usable content it didn't beat.
+            if d["verdict"] != "usable" or new_text > cur_text:
+                trail.append(f"browser → {d3['verdict']}")
+                r, d = r3, d3
+            else:
+                trail.append(f"browser → {d3['verdict']} (kept http)")
         else:
             trail.append(f"browser → failed ({r3.error.splitlines()[0] if r3.error else 'no content'})")
             r.notes.append(r3.error)
@@ -501,6 +641,18 @@ def auto(url: str, fmt: str = "md", allow_browser: bool = True) -> tuple[str, Re
             d,
         )
 
+    # We have HTML but never reached a clean "usable" verdict — the body is
+    # likely a block/challenge page. Surface that instead of passing it off as
+    # real content (an agent must not trust a denial page as the answer).
+    d["resolved"] = d["verdict"] == "usable"
+    warning = ""
+    if d["verdict"] != "usable":
+        warning = (
+            f"⚠ get-page did NOT reach usable content (verdict: {d['verdict']} — "
+            f"{d['reason']}). The body below is probably a block/challenge page, "
+            f"not the real content.\nLadder: {d['trail']}\n\n"
+        )
+
     if fmt == "raw":
         out = r.html
     elif fmt == "json":
@@ -512,6 +664,7 @@ def auto(url: str, fmt: str = "md", allow_browser: bool = True) -> tuple[str, Re
                 "rung": r.rung,
                 "trail": d["trail"],
                 "verdict": d["verdict"],
+                "resolved": d["resolved"],
                 "markdown": extract_readable(r.html, r.url),
                 "jsonld": extract_jsonld(r.html),
             },
@@ -520,7 +673,7 @@ def auto(url: str, fmt: str = "md", allow_browser: bool = True) -> tuple[str, Re
         )
     else:  # md (default)
         provenance = f"<!-- get-page: {r.final_url or r.url} | {d['trail']} -->\n\n"
-        out = provenance + extract_readable(r.html, r.url)
+        out = warning + provenance + extract_readable(r.html, r.url)
     return out, r, d
 
 
@@ -528,22 +681,43 @@ def auto(url: str, fmt: str = "md", allow_browser: bool = True) -> tuple[str, Re
 # CLI
 # ----------------------------------------------------------------------------
 
-def _read_html_arg(src: str) -> tuple[str, str]:
-    """Resolve a url-or-'-' argument to (html, url). '-' reads stdin."""
+def fetch_resolved(src: str) -> Result:
+    """Resolve a url / file path / '-' (stdin) to a Result.
+
+    URLs use the smart→impersonate HTTP escalation; PDFs are kept as bytes.
+    """
     if src == "-":
-        return sys.stdin.read(), ""
+        data = sys.stdin.buffer.read()
+        r = Result(url="", rung="stdin", content=data, ok=True)
+        if data[:5] == b"%PDF-":
+            r.content_type = "application/pdf"
+        else:
+            r.html = data.decode("utf-8", "replace")
+        return r
+
     if src.startswith("http://") or src.startswith("https://"):
         r = fetch_smart(src)
-        # Escalate to TLS impersonation if the smart fetch was blocked or empty
-        # (e.g. a 403 served with a short bot-policy body).
-        if not r.ok or not r.html or (diagnose(r)["verdict"] in ("blocked", "antibot")):
+        # Escalate to TLS impersonation if blocked or empty (e.g. a 403 served
+        # with a short bot-policy body). PDFs are already usable as bytes.
+        if not is_pdf(r) and (
+            not r.ok or not r.html or diagnose(r)["verdict"] in ("blocked", "antibot")
+        ):
             r2 = fetch_impersonate(src)
-            if r2.ok and r2.html:
+            if r2.ok and (r2.html or is_pdf(r2)):
                 r = r2
-        return r.html, r.final_url or src
-    # Treat as a local file path.
-    with open(src, "r", encoding="utf-8") as fh:
-        return fh.read(), src
+        if not r.final_url:
+            r.final_url = src
+        return r
+
+    # Treat as a local file path (read as bytes to support PDFs).
+    with open(src, "rb") as fh:
+        data = fh.read()
+    r = Result(url=src, rung="file", content=data, final_url=src, ok=True)
+    if data[:5] == b"%PDF-":
+        r.content_type = "application/pdf"
+    else:
+        r.html = data.decode("utf-8", "replace")
+    return r
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -585,7 +759,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "auto":
         out, r, d = auto(args.url, fmt=args.format, allow_browser=not args.no_browser)
         print(out)
-        return 0 if r.html else 2
+        if d.get("verdict") == "pdf" or d.get("resolved"):
+            return 0
+        return 2  # no content, or content that's a block/challenge page
 
     if args.cmd == "fetch":
         fn = {"smart": fetch_smart, "impersonate": fetch_impersonate, "browser": fetch_browser}[args.rung]
@@ -593,6 +769,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"# rung={r.rung} status={r.status} final_url={r.final_url}", file=sys.stderr)
         if r.error:
             print(r.error, file=sys.stderr)
+        if is_pdf(r):
+            print("# application/pdf — use `get-page readable` for extracted text", file=sys.stderr)
+            print(extract_pdf(r.content))
+            return 0
         print(r.html)
         return 0 if r.html else 2
 
@@ -603,23 +783,26 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "readable":
-        html, url = _read_html_arg(args.src)
-        print(extract_readable(html, url))
+        r = fetch_resolved(args.src)
+        if is_pdf(r):
+            print(extract_pdf(r.content))
+        else:
+            print(extract_readable(r.html, r.final_url or r.url))
         return 0
 
     if args.cmd == "jsonld":
-        html, _ = _read_html_arg(args.src)
-        print(json.dumps(extract_jsonld(html), indent=2, ensure_ascii=False))
+        r = fetch_resolved(args.src)
+        print(json.dumps(extract_jsonld(r.html), indent=2, ensure_ascii=False))
         return 0
 
     if args.cmd == "select":
-        html, _ = _read_html_arg(args.src)
-        print(json.dumps(extract_select(html, args.css), indent=2, ensure_ascii=False))
+        r = fetch_resolved(args.src)
+        print(json.dumps(extract_select(r.html, args.css), indent=2, ensure_ascii=False))
         return 0
 
     if args.cmd == "meta":
-        html, url = _read_html_arg(args.src)
-        print(json.dumps(extract_meta(html, url), indent=2, ensure_ascii=False))
+        r = fetch_resolved(args.src)
+        print(json.dumps(extract_meta(r.html, r.final_url or r.url), indent=2, ensure_ascii=False))
         return 0
 
     return 1
