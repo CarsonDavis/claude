@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Thin launcher: uv resolves the isolated env from the PEP 723 header in get_page.py
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec uv run --quiet --script "$DIR/get_page.py" "$@"
