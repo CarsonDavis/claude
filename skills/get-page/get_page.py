@@ -69,6 +69,14 @@ DEFAULT_TIMEOUT = 30.0
 # and gets a browser second opinion. Real articles clear this easily.
 THIN_USABLE_CHARS = 700
 
+# A deeper (browser) rung's render is only ADOPTED as the answer if it produced
+# at least this much visible text. Below it, a "usable" verdict is untrustworthy
+# (a thin challenge/partial page that merely lacks a block signature), so we keep
+# the prior verdict instead of passing the thin page off as real content.
+# Chosen to sit between the thin block pages observed (~500-800c) and a genuine
+# minimal rendered page (quotes.toscrape.com/js ≈ 1600c).
+SUBSTANTIAL_CHARS = 1000
+
 
 @dataclass
 class Result:
@@ -189,17 +197,10 @@ def fetch_browser(
     try:
         import crawl4ai  # noqa: F401
     except ImportError:
-        if os.environ.get("GET_PAGE_BROWSER_REEXEC") != "1":
-            env = dict(os.environ, GET_PAGE_BROWSER_REEXEC="1")
-            os.execvpe(
-                "uv",
-                ["uv", "run", "--with", "crawl4ai",
-                 "--script", os.path.abspath(__file__), *sys.argv[1:]],
-                env,
-            )
+        _reexec_with_browser_deps()
         r.error = (
             "crawl4ai not available. Install once with:\n"
-            "  uv run --with crawl4ai --script <this script> ..."
+            "  uv run --with crawl4ai --with nodriver --script <this script> ..."
         )
         return r
 
@@ -247,9 +248,110 @@ def _crawl4ai_render(url: str, timeout: float, scroll: bool):
     return html, final_url, status
 
 
+def _reexec_with_browser_deps() -> None:
+    """Re-exec once through uv with both browser engines available.
+
+    The browser rungs (crawl4ai, nodriver) are not core deps. The first time one
+    is reached we re-exec the script with both added to the ephemeral uv env, so
+    a single install covers either engine the ladder may need.
+    """
+    if os.environ.get("GET_PAGE_BROWSER_REEXEC") == "1":
+        return
+    env = dict(os.environ, GET_PAGE_BROWSER_REEXEC="1")
+    os.execvpe(
+        "uv",
+        ["uv", "run", "--with", "crawl4ai", "--with", "nodriver",
+         "--script", os.path.abspath(__file__), *sys.argv[1:]],
+        env,
+    )
+
+
+# ----------------------------------------------------------------------------
+# Rung 4 — undetected headful browser (nodriver), deepest break-glass
+# ----------------------------------------------------------------------------
+
+# macOS Google Chrome; nodriver auto-detects if this isn't present.
+_CHROME_MAC = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
+def fetch_nodriver(url: str, timeout: float = DEFAULT_TIMEOUT) -> Result:
+    """Render in real Google Chrome via nodriver — the deepest, last-resort rung.
+
+    nodriver drives Chrome over raw CDP with no WebDriver flag. In head-to-head
+    testing it defeated Cloudflare on hosts where Playwright AND patchright
+    (crawl4ai's engine) were blocked even headful — it returned the real product
+    page where they got a 342-char challenge.
+
+    Runs HEADFUL by default (a visible Chrome window): that is what actually
+    beats Cloudflare, and nodriver's own headless=True fails to connect on macOS.
+    Set GET_PAGE_NODRIVER_HEADLESS=1 to force windowless (weaker, more detectable).
+    """
+    r = Result(url=url, rung="nodriver")
+    try:
+        import nodriver  # noqa: F401
+    except ImportError:
+        _reexec_with_browser_deps()
+        r.error = "nodriver not available (re-exec with --with nodriver failed)"
+        return r
+    try:
+        html, final_url = _nodriver_render(url, timeout)
+        r.html = html or ""
+        r.final_url = final_url or url
+        r.status = 200 if html else None
+        r.ok = bool(html)
+        if not html:
+            r.error = "nodriver returned no content"
+    except Exception as exc:  # noqa: BLE001
+        r.error = f"{type(exc).__name__}: {exc}"
+    return r
+
+
+def _nodriver_render(url: str, timeout: float):
+    """Render via nodriver (headful real Chrome); return (html, final_url)."""
+    import asyncio
+    import os.path
+
+    import nodriver as uc
+
+    chrome = _CHROME_MAC if os.path.exists(_CHROME_MAC) else None
+    headless = os.environ.get("GET_PAGE_NODRIVER_HEADLESS") == "1"
+    browser_args = ["--headless=new"] if headless else []
+
+    async def run():
+        browser = await uc.start(
+            headless=False, no_sandbox=True,
+            browser_executable_path=chrome, browser_args=browser_args,
+        )
+        try:
+            page = await browser.get(url)
+            await page.sleep(6)  # let the JS challenge clear
+            html = await page.get_content()
+            try:
+                final_url = await page.evaluate("location.href")
+            except Exception:  # noqa: BLE001
+                final_url = url
+            return html or "", (final_url if isinstance(final_url, str) else url)
+        finally:
+            try:
+                res = browser.stop()
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception:  # noqa: BLE001
+                pass
+
+    return uc.loop().run_until_complete(
+        asyncio.wait_for(run(), timeout=timeout + 25)
+    )
+
+
 # ----------------------------------------------------------------------------
 # Rung 1 — diagnose
 # ----------------------------------------------------------------------------
+
+# A page is only treated as an anti-bot block if a signature matches AND its
+# visible text is under this many chars. Real pages can carry stray challenge
+# strings; genuine challenge/denial pages are short.
+_ANTIBOT_MAX_TEXT = 2500
 
 # Signatures for interactive anti-bot / challenge pages.
 _ANTIBOT_SIGNATURES = (
@@ -340,7 +442,11 @@ def diagnose(result: Result) -> dict:
         d["recommend"] = "retry"
         return d
 
-    if antibot_hit:
+    # Anti-bot challenge — but only when the page is also THIN. A fully rendered
+    # page (e.g. a 23k-char product page) can legitimately contain a stray
+    # Cloudflare "challenge-platform" script string; that is not a block. Real
+    # challenge/denial pages are short.
+    if antibot_hit and text_len < _ANTIBOT_MAX_TEXT:
         d["verdict"] = "antibot"
         d["reason"] = f"anti-bot challenge page (matched '{antibot_hit}')"
         # Impersonation sometimes clears it; otherwise a real browser.
@@ -572,7 +678,23 @@ def _pdf_output(r: Result, fmt: str, trail: str) -> str:
     return f"<!-- get-page: {r.final_url or r.url} | {trail} -->\n\n{text}"
 
 
-def auto(url: str, fmt: str = "md", allow_browser: bool = True) -> tuple[str, Result, dict]:
+def _should_adopt(prev_d: dict, prev_text: int, new_d: dict, new_text: int) -> bool:
+    """Whether a deeper rung's render should replace the current best result.
+
+    Adopt only when the render is genuinely usable with substantial content, or
+    when it strictly beats an already-usable result. A thin "usable" page (e.g. a
+    partial/challenge page that merely lacks a block signature) is NOT adopted —
+    we keep the prior blocked/antibot verdict so it isn't passed off as content.
+    """
+    if new_d["verdict"] == "usable" and new_text >= SUBSTANTIAL_CHARS:
+        return True
+    if prev_d["verdict"] == "usable" and new_d["verdict"] == "usable" and new_text > prev_text:
+        return True
+    return False
+
+
+def auto(url: str, fmt: str = "md", allow_browser: bool = True,
+         allow_headful: bool = True) -> tuple[str, Result, dict]:
     """Walk the escalation ladder until usable content, then extract.
 
     Returns (output_string, winning_result, diagnosis).
@@ -619,15 +741,32 @@ def auto(url: str, fmt: str = "md", allow_browser: bool = True) -> tuple[str, Re
         if r3.ok and r3.html:
             d3 = diagnose(r3)
             new_text = _visible_text_len(r3.html)
-            # Adopt the render unless we already had usable content it didn't beat.
-            if d["verdict"] != "usable" or new_text > cur_text:
+            if _should_adopt(d, cur_text, d3, new_text):
                 trail.append(f"browser → {d3['verdict']}")
                 r, d = r3, d3
+                cur_text = new_text
             else:
-                trail.append(f"browser → {d3['verdict']} (kept http)")
+                trail.append(f"browser → {d3['verdict']} (thin {new_text}c, kept {d['verdict']})")
         else:
             trail.append(f"browser → failed ({r3.error.splitlines()[0] if r3.error else 'no content'})")
             r.notes.append(r3.error)
+
+    # Rung 4 — deepest break-glass: undetected headful Chrome (nodriver). Only
+    # when everything above still failed to reach usable content (e.g. Cloudflare
+    # that crawl4ai/patchright can't pass). Pops a visible window; last resort.
+    if allow_browser and allow_headful and d["verdict"] in ("antibot", "blocked", "empty", "js_shell"):
+        r4 = fetch_nodriver(url)
+        if r4.ok and r4.html:
+            d4 = diagnose(r4)
+            new_text = _visible_text_len(r4.html)
+            if _should_adopt(d, _visible_text_len(r.html or ""), d4, new_text):
+                trail.append(f"nodriver → {d4['verdict']}")
+                r, d = r4, d4
+            else:
+                trail.append(f"nodriver → {d4['verdict']} (thin {new_text}c, kept {d['verdict']})")
+        else:
+            trail.append(f"nodriver → failed ({r4.error.splitlines()[0] if r4.error else 'no content'})")
+            r.notes.append(r4.error)
 
     d["trail"] = " | ".join(trail)
 
@@ -731,11 +870,13 @@ def main(argv: list[str] | None = None) -> int:
     p_auto.add_argument("url")
     p_auto.add_argument("--format", choices=["md", "json", "raw"], default="md")
     p_auto.add_argument("--no-browser", action="store_true", help="cap at HTTP-only rungs")
+    p_auto.add_argument("--no-headful", action="store_true",
+                        help="skip the deepest nodriver rung (no visible browser window)")
 
     p_fetch = sub.add_parser("fetch", help="single fetch at a chosen rung")
     p_fetch.add_argument("url")
     p_fetch.add_argument(
-        "--rung", choices=["smart", "impersonate", "browser"], default="smart"
+        "--rung", choices=["smart", "impersonate", "browser", "nodriver"], default="smart"
     )
 
     p_diag = sub.add_parser("diagnose", help="classify why a fetch fails / what's needed")
@@ -757,14 +898,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.cmd == "auto":
-        out, r, d = auto(args.url, fmt=args.format, allow_browser=not args.no_browser)
+        out, r, d = auto(args.url, fmt=args.format, allow_browser=not args.no_browser,
+                         allow_headful=not args.no_headful)
         print(out)
         if d.get("verdict") == "pdf" or d.get("resolved"):
             return 0
         return 2  # no content, or content that's a block/challenge page
 
     if args.cmd == "fetch":
-        fn = {"smart": fetch_smart, "impersonate": fetch_impersonate, "browser": fetch_browser}[args.rung]
+        fn = {"smart": fetch_smart, "impersonate": fetch_impersonate,
+              "browser": fetch_browser, "nodriver": fetch_nodriver}[args.rung]
         r = fn(args.url)
         print(f"# rung={r.rung} status={r.status} final_url={r.final_url}", file=sys.stderr)
         if r.error:

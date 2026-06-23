@@ -77,6 +77,52 @@ don't. This routed the grids to the crawl4ai rung and recovered 3 of 4.
   matched somewhere in a page that still rendered its catalog. Verdict labels on
   partially-blocked pages are noisy; trust `resolved` and content, not the label.
 
+## Update: headful nodriver cracks Cloudflare (the 4th rung)
+
+We then tested whether an undetected browser could beat the "unreachable" hard
+blocks. Controlled head-to-head — **same real Google Chrome, all headful, same
+targets:**
+
+```
+engine        Digikey (Cloudflare)     Mouser (PerimeterX)
+playwright    342c  BLOCKED            929c  BLOCKED
+patchright    342c  BLOCKED            929c  BLOCKED   (this is crawl4ai's engine)
+nodriver      23721c REAL DATA ✓        18c  blocked
+```
+
+Finding: **nodriver is decisively better than Playwright/patchright on
+Cloudflare.** Same browser, same headful mode — the only difference is how it's
+driven (raw CDP, no WebDriver flag vs. a Playwright-controlled browser Cloudflare
+fingerprints). nodriver returned the full Digikey product page with pricing where
+the others got a 342-char challenge. Mouser/PerimeterX still beats everyone.
+
+Two consequences, both shipped:
+
+1. **Rung 4 = nodriver, headful, last resort.** Added below crawl4ai in `auto`;
+   only fires when every rung above still failed. It runs **headful** (visible
+   window) on purpose — windowless `--headless=new` is far weaker (it lost to
+   crawl4ai in benchmarking) and nodriver's own `headless=True` won't even
+   connect on macOS. `--no-headful` disables it. With it, the ladder is
+   `smart → impersonate → crawl4ai → nodriver`, and Digikey now resolves:
+   `smart → blocked | impersonate → blocked | browser → antibot | nodriver → usable`.
+
+2. **Fixed an `antibot` false-positive.** A fully rendered 23k-char page can
+   contain a stray Cloudflare `challenge-platform` string; the old detector
+   flagged it as a block, hiding the cracked content. `diagnose` now requires a
+   signature match **AND** thin visible text (`_ANTIBOT_MAX_TEXT`) before
+   calling `antibot`.
+
+Caveat: nodriver headful is slow and pops a window per fetch — correct as a last
+resort, wrong as a default. It's also **flaky**: Digikey returned the full 23k
+page on some runs and a 62c block on others. PerimeterX (Mouser) and pure
+score-based systems remain unbeaten by any local tool.
+
+A thin-content guard (`_should_adopt` / `SUBSTANTIAL_CHARS`) was needed once
+nodriver landed: a deep render is only adopted as the answer if it's usable AND
+substantial, so a thin partial/challenge page that merely lacks a block
+signature isn't passed off as real content (that bug briefly regressed the hard
+blocks to `resolved=True` with ~500c of junk).
+
 ## If you change the fetch/extract path
 
 Re-run the bed and confirm **CORE stays 9/9** (that's the regression gate; the

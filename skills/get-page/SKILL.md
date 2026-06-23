@@ -31,7 +31,8 @@ It escalates only as far as needed and prints a provenance trail, e.g.
 `<!-- get-page: <url> | smart → blocked | impersonate → usable -->`.
 
 Formats: `--format md` (default) · `json` (markdown + jsonld + metadata) · `raw`.
-Cap at HTTP-only (skip the browser) with `--no-browser`.
+Cap at HTTP-only (skip browsers) with `--no-browser`. Skip only the deepest
+headful rung (no visible window) with `--no-headful`.
 
 **Trust the verdict.** If the ladder never reaches usable content, `auto`
 prints a `⚠` banner and exits non-zero — the body is likely a block/challenge
@@ -48,6 +49,7 @@ return extracted text instead of choking on binary.
 | diagnose | classifies the failure, picks next rung | routing |
 | impersonate | curl_cffi TLS-fingerprint spoof | anti-bot 403s, no browser |
 | browser | crawl4ai (stealth headless render) | JS-rendered pages, some anti-bot |
+| nodriver | undetected **headful** Chrome (last resort) | Cloudflare that beats crawl4ai/Playwright |
 
 `auto` runs these for you. Use individual subcommands to compose your own flow.
 
@@ -76,12 +78,15 @@ Run `get-page <command> --help` for flags.
 
 - **Zero setup.** `uv` reads the inline dependency header and manages an
   isolated environment automatically on first run. Nothing to `pip install`.
-- **Browser rung is lazy.** crawl4ai (~90 packages, stealth headless) is pulled
-  in only when the browser rung is actually reached, then cached. It also fires
-  as a "second opinion" when an HTTP result looks usable but is suspiciously
-  thin with `<script>` markers (client-rendered listing grids). The Chromium
-  binary is a one-time download — if missing, the tool prints:
-  `uv tool run --with playwright playwright install chromium`.
+- **Browser rungs are lazy.** crawl4ai + nodriver are pulled in only when a
+  browser rung is reached, then cached. crawl4ai (headless) also fires as a
+  "second opinion" when an HTTP result looks usable but is suspiciously thin
+  with `<script>` markers (client-rendered listing grids).
+- **nodriver is the deepest, last-resort rung** and runs **headful** (a visible
+  Chrome window) — that is what defeats Cloudflare where headless crawl4ai and
+  even headful Playwright/patchright get a challenge page. It only fires when
+  every rung above still failed. `--no-headful` disables it; it needs Google
+  Chrome installed.
 - **Single page only.** No crawling/pagination by design — fetch one URL, get
   clean content. For authenticated pages, the browser rung can be extended with
   a persistent profile (not built in).
