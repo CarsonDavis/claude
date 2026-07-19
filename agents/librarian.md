@@ -1,0 +1,1 @@
+/Users/cdavis/github/second-brain/agents/librarian.md
