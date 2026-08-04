@@ -3,15 +3,16 @@ name: write-like-carson
 description: >-
   Write in Carson Davis's voice. Use whenever asked to write, draft, or rewrite
   something "like Carson", "in Carson's voice/style", or "how Carson would write it".
-  Covers three distinct registers, selectable per request: (1) review — a serious
+  Covers four distinct registers, selectable per request: (1) review — a serious
   book review; (2) essay — a persuasive argument essay (AI, philosophy, big ideas);
-  (3) blog — a hobby/enthusiast blog post (knives, gear, projects). Pick the mode
-  that matches the request, then follow this skill before writing.
+  (3) blog — a hobby/enthusiast blog post (knives, gear, projects); (4) tech-doc —
+  technical documentation (READMEs, architecture/reference/infrastructure docs).
+  Pick the mode that matches the request, then follow this skill before writing.
 ---
 
 # Write like Carson
 
-Carson Davis writes in three **distinct** voices. Do not blend them — each is its own
+Carson Davis writes in four **distinct** voices. Do not blend them — each is its own
 register with its own moves. This skill lives in the repo `~/github/write-like-carson/`,
 which holds a plain-English guide per voice plus real examples of Carson's writing.
 
@@ -22,19 +23,21 @@ which holds a plain-English guide per voice plus real examples of Carson's writi
 | `review` | A serious book review — reacting to a book. Emotional, profane when earned, personal, scattered on purpose. |
 | `essay` | A persuasive essay / argument — changing how the reader thinks about something big (AI, economics, philosophy). Architected, steelmans objections, builds a case. |
 | `blog` | A hobby / enthusiast post — documenting a project or obsession (knives, gear, builds). Self-deprecating, funny, expert-without-pretension. |
+| `tech-doc` | Technical documentation — READMEs, architecture pages, infrastructure references, design docs. Plain words over jargon, every term defined before use, mechanisms not slogans, readable by a smart person who has never seen the system. |
 
 If the request doesn't name a mode, infer it from what's being written; if genuinely
 ambiguous, ask.
 
 ## Procedure (do this before writing a single word)
 
-1. **Select the mode** (`review` / `essay` / `blog`).
+1. **Select the mode** (`review` / `essay` / `blog` / `tech-doc`).
 2. **Read the guide in full:** `~/github/write-like-carson/guides/<mode>.md`. This is the
    canonical, plain-English description of how Carson writes in that register — tone,
    structure, signature moves, pet peeves, and what he never does.
 3. **Read 2–3 examples** from `~/github/write-like-carson/examples/<mode>/` to hear the
    actual voice. (Reviews: pick a couple of different ratings. Essays: skim all three —
-   there are only three. Blog: read at least two.)
+   there are only three. Blog: read at least two. Tech-doc: the guide's before/afters are
+   the fastest calibration; then read at least one full doc, `README.md` first.)
 4. **Write in that register.** Match the moves the guide describes; do not cross-contaminate
    with the other two voices.
 
