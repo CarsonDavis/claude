@@ -12,16 +12,17 @@ You (the agent that did the work) are the wrong author for parts of this body: y
 ## Target structure
 
 ```
+## Line breakdown        ← first thing on the page: category totals, ADDED lines only
+
 <one-sentence lead — what this PR does and why>
 
 Closes #N
 
-## What this does        ← brief list, observable behavior
+## What this does        ← brief list, observable behavior, one sentence per bullet
 ## Decisions to review   ← omit the section entirely if none found
-## Line breakdown        ← category totals table
 ```
 
-Small PRs get small bodies — a lead sentence, a few bullets, maybe no decisions. The pipeline still runs.
+Small PRs get small bodies — a lead sentence, a few bullets, maybe no decisions. The pipeline still runs. Bodies run long by default — the budget is one sentence per bullet, no term-glossing for the repo's own team, and detail gets cut rather than compressed into blur.
 
 ## Phase 0 — gather facts (you)
 
@@ -34,9 +35,9 @@ Small PRs get small bodies — a lead sentence, a few bullets, maybe no decision
 
 Each prompt gets: the two scratchpad file paths, the issue number, the repo path. Nothing else about the session.
 
-**Decisions agent** — may read the diff, the issue, and any repo code it needs. Instruct it: *"Surface only decisions embedded in this diff that a senior reviewer would genuinely pause on — contracts and interfaces created, tradeoffs taken, blast radius, irreversibility, security. For each: what was chosen, the live alternative, why it matters. Zero findings is a correct answer. Excluded: naming, formatting, style, forced moves, and anything the issue itself already mandates."*
+**Decisions agent** — may read the diff, the issue, and any repo code it needs. Instruct it: *"Surface only decisions embedded in this diff that a senior reviewer would genuinely pause on — contracts and interfaces created, tradeoffs taken, blast radius, irreversibility, security. A decision is a choice with a live alternative; a decision's obvious consequences are not themselves decisions, and standalone facts about what the diff does belong in the summary, not here. For each: what was chosen, the live alternative, why it matters. Zero findings is a correct answer. Excluded: naming, formatting, style, forced moves, and anything the issue itself already mandates."*
 
-**Classifier agent** — reads numstat, inspects files as needed. Output: total changed lines per category — production code, tests, docs, config/build, generated (lockfiles, build output, fixtures) — splitting mixed files by judgment. **Totals must sum to the numstat total; if they don't, it redoes the arithmetic before returning.**
+**Classifier agent** — reads numstat, inspects files as needed. Output: total **added** lines per category (numstat column 1 only — deletions are ignored, so the total matches GitHub's green number) — production code, tests, docs, config/build, generated (lockfiles, build output, fixtures) — splitting mixed files by judgment. **Totals must sum to the numstat additions total; if they don't, it redoes the arithmetic before returning.**
 
 **Summarizer agent** — reads diff + issue. Output: a brief list of what the PR does, phrased as behavior a reviewer can check ("popups now close on teardown"), never file narration ("modified Map_.js").
 
@@ -44,16 +45,17 @@ Each prompt gets: the two scratchpad file paths, the issue number, the repo path
 
 Prompt: read `~/github/write-like-carson/guides/tech-doc.md` in full, then compose the body from the three payloads using the target structure. Additional rules, verbatim:
 
-- Plain English; every term defined before use; brief.
+- Plain English; brief. The readers are the repo's own team — do not gloss terms they use daily.
+- One sentence per "What this does" bullet, bold lead-in phrase; one to two sentences per decision. Cut secondary detail rather than blurring it.
 - Lead with what changed, not how the work went.
 - No session narrative, no review-process history, no "we discussed".
 - No AI attribution of any kind.
-- Line table: `| Category | Lines | % |`, rows sorted descending, omit empty categories.
+- Line table first on the page: `| Category | Lines added | % |`, rows sorted descending, omit empty categories.
 
 ## Phase 3 — verify and post (you)
 
-1. Spot-check each decision against the actual diff — cut any the diff doesn't support.
-2. Check the table sums against numstat.
+1. Spot-check each decision against the actual diff — cut any the diff doesn't support. If a decision describes a flaw that is cheap to fix, stop and fix it (or raise it with the user) instead of shipping it as a bullet — decisions are choices, not confessions.
+2. Check the table sums against numstat additions.
 3. Write the body to a scratchpad file, never the repo.
 4. `gh pr create --body-file …` (or `gh pr edit` if a PR exists). Imperative title; follow the repo's title conventions. `Closes #N` stays in the body. Never merge.
 
@@ -66,3 +68,4 @@ Prompt: read `~/github/write-like-carson/guides/tech-doc.md` in full, then compo
 | "PR's too small to bother" | Small PR → small body, same pipeline. The classifier and fresh eyes cost one prompt each. |
 | "The decisions section feels thin, I'll pad it" | Zero or one decision is a valid, good body. Padding is minutiae. |
 | "I'll fix the writer's prose myself" | Re-prompt the writer with the specific fix. One mind owns the prose. |
+| "This flaw makes a good decisions bullet" | If it's cheap to fix, fix it before composing. Decisions are choices with live alternatives, not confessions. |

@@ -23,7 +23,7 @@ which holds a plain-English guide per voice plus real examples of Carson's writi
 | `review` | A serious book review — reacting to a book. Emotional, profane when earned, personal, scattered on purpose. |
 | `essay` | A persuasive essay / argument — changing how the reader thinks about something big (AI, economics, philosophy). Architected, steelmans objections, builds a case. |
 | `blog` | A hobby / enthusiast post — documenting a project or obsession (knives, gear, builds). Self-deprecating, funny, expert-without-pretension. |
-| `tech-doc` | Technical documentation — READMEs, architecture pages, infrastructure references, design docs. Plain words over jargon, every term defined before use, mechanisms not slogans, readable by a smart person who has never seen the system. |
+| `tech-doc` | Technical documentation — READMEs, architecture pages, infrastructure references, design docs, and code comment blocks. Plain words over jargon, every term defined before use, mechanisms not slogans, readable by a smart person who has never seen the system. |
 
 If the request doesn't name a mode, infer it from what's being written; if genuinely
 ambiguous, ask.
